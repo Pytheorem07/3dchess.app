@@ -1,0 +1,822 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Chess64 3D</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/chess.js/0.10.3/chess.min.js"></script>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        body { margin: 0; overflow: hidden; font-family: sans-serif; background: #000; color: white; touch-action: none; }
+        canvas { display: block; width: 100vw; height: 100vh; position: fixed; top: 0; left: 0; z-index: 1; }
+        
+        #board-2d-container { 
+            position: fixed; inset: 0; z-index: 10; display: flex; align-items: center; justify-content: center; 
+            background: radial-gradient(circle, #111 0%, #000 100%); visibility: hidden; opacity: 0; transition: opacity 0.3s;
+        }
+        #board-2d { 
+            display: grid; grid-template-columns: repeat(8, 1fr); grid-template-rows: repeat(8, 1fr); 
+            width: 85vmin; height: 85vmin; border: 8px solid #222; border-radius: 8px; box-shadow: 0 0 50px rgba(0,0,0,0.5);
+        }
+        .sq-2d { display: flex; align-items: center; justify-content: center; cursor: pointer; transition: background 0.1s; position: relative; }
+        .sq-2d img { width: 85%; height: 85%; pointer-events: none; user-select: none; z-index: 2; }
+        .highlight-2d { box-shadow: inset 0 0 0 4px #3b82f6; z-index: 5; background: rgba(59,130,246,0.3) !important; }
+
+        .ui-overlay { position: fixed; inset: 0; z-index: 50; pointer-events: none; display: flex; flex-direction: column; padding: 1.5rem; }
+        .pointer-events-auto { pointer-events: auto; }
+        .glass { background: rgba(0,0,0,0.85); backdrop-filter: blur(20px); border: 1px solid rgba(255,255,255,0.1); box-shadow: 0 8px 32px rgba(0,0,0,0.8); }
+        
+        #eval-wrapper { width: 12px; height: 350px; position: absolute; left: 25px; top: 50%; transform: translateY(-50%); z-index: 60; transition: all 0.3s; display: flex; flex-direction: column; align-items: center; gap: 8px; }
+        #eval-container { width: 100%; height: 100%; background: #222; border-radius: 20px; overflow: hidden; border: 1px solid rgba(255,255,255,0.1); position: relative; }
+        #eval-fill { width: 100%; height: 50%; background: #fff; position: absolute; bottom: 0; transition: height 1s cubic-bezier(0.16, 1, 0.3, 1); }
+        
+        .ui-hidden { opacity: 0 !important; visibility: hidden !important; pointer-events: none !important; }
+        
+        #floating-title {
+            position: fixed; top: 10%; left: 50%; transform: translateX(-50%); z-index: 2;
+            font-size: 8vw; font-weight: 900; letter-spacing: -0.05em; opacity: 0;
+            text-transform: uppercase; color: #fff; filter: blur(4px); pointer-events: none;
+            transition: opacity 0.5s ease;
+        }
+
+        .glass::-webkit-scrollbar { width: 4px; }
+        .glass::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.1); border-radius: 10px; }
+        select option { background: #111; color: white; }
+
+        #best-move-hud {
+            position: fixed; top: 20px; left: 50%; transform: translateX(-50%);
+            z-index: 100; pointer-events: auto; transition: opacity 0.3s;
+        }
+    </style>
+</head>
+<body>
+
+<div id="floating-title">Chess64</div>
+
+<div id="best-move-hud" class="glass px-6 py-2 rounded-full border border-blue-500/30 flex items-center gap-3">
+    <div class="w-2 h-2 rounded-full bg-blue-500 animate-pulse"></div>
+    <span class="text-[10px] font-black uppercase tracking-widest text-blue-400">Best:</span>
+    <span id="best-move-val-hud" class="font-mono text-sm font-bold text-white">...</span>
+</div>
+
+<div id="eval-wrapper" class="eval-component">
+    <div id="eval-val-top" class="text-[10px] font-mono font-bold text-white mb-1">0.0</div>
+    <div id="eval-container">
+        <div id="eval-fill"></div>
+    </div>
+</div>
+
+<div id="board-2d-container" class="pointer-events-auto">
+    <div id="board-2d"></div>
+</div>
+
+<div class="ui-overlay">
+    <!-- Top Bar -->
+    <div class="flex justify-between items-start w-full">
+        <div class="glass p-4 rounded-2xl pointer-events-auto toggle-ui">
+            <h1 class="text-xl font-black tracking-tighter uppercase leading-none italic text-white">Chess64 <span id="glare-text" class="text-blue-500">3D</span></h1>
+            <div id="game-status" class="text-[9px] text-blue-400 font-bold uppercase mt-1 tracking-widest">Engine Ready</div>
+        </div>
+
+        <div class="flex gap-2 pointer-events-auto">
+            <button id="toggle-moves" class="glass px-5 py-2.5 rounded-xl text-[10px] font-bold uppercase hover:bg-white/10 transition">Moves</button>
+            <button id="best-move-toggle" class="glass px-5 py-2.5 rounded-xl text-[10px] font-bold uppercase hover:bg-white/10 transition">Best Move: On</button>
+            <button id="toggle-eval" class="glass px-5 py-2.5 rounded-xl text-[10px] font-bold uppercase hover:bg-white/10 transition">Hide Eval</button>
+            <button id="toggle-ui-btn" class="glass px-5 py-2.5 rounded-xl text-[10px] font-bold uppercase hover:bg-white/10 transition">Hide UI</button>
+        </div>
+    </div>
+
+    <!-- Main Content Layout -->
+    <div class="flex flex-1 mt-4 overflow-hidden gap-4">
+        <!-- Move List (Left Side) -->
+        <div id="move-list-container" class="w-64 glass rounded-3xl p-4 flex flex-col pointer-events-auto ui-hidden">
+            <div class="text-[10px] font-black uppercase text-white/40 mb-3 tracking-widest flex justify-between">
+                <span>Move History</span>
+                <span id="move-count" class="text-blue-500">0</span>
+            </div>
+            <div id="move-history" class="flex-1 overflow-y-auto pr-2 space-y-1 font-mono text-xs">
+                <!-- Moves populate here -->
+            </div>
+        </div>
+
+        <div class="flex-1"></div>
+
+        <!-- Side Menu (Right Side) -->
+        <div class="flex flex-col gap-3 items-end toggle-ui">
+            <div class="glass p-5 rounded-3xl pointer-events-auto w-80 space-y-4 max-h-[75vh] overflow-y-auto">
+                
+                <!-- Mode Selection -->
+                <div class="p-3 bg-white/5 rounded-2xl border border-white/5 space-y-3">
+                    <div class="flex flex-col">
+                        <label class="text-[8px] font-black opacity-40 uppercase mb-1">Active Game Mode</label>
+                        <select id="game-mode" class="bg-white/5 border border-white/10 text-white text-[11px] rounded-xl p-2 outline-none">
+                            <option value="analyze">Free Analysis</option>
+                            <option value="play">Vs Computer</option>
+                            <option value="comp-vs-comp">Computer vs Computer</option>
+                        </select>
+                    </div>
+
+                    <!-- White Settings -->
+                    <div id="white-settings" class="hidden space-y-2 pt-2 border-t border-white/5">
+                        <label class="text-[8px] font-black text-blue-400 uppercase">White Engine</label>
+                        <div class="grid grid-cols-2 gap-2">
+                            <select id="w-comp-level" class="bg-white/5 border border-white/10 text-white text-[10px] rounded-lg p-1.5 outline-none"></select>
+                            <select id="w-comp-style" class="bg-white/5 border border-white/10 text-white text-[10px] rounded-lg p-1.5 outline-none">
+                                <option value="Solid">Solid</option>
+                                <option value="Aggressive">Aggressive</option>
+                                <option value="Positional">Positional</option>
+                                <option value="Gambiteer">Gambiteer</option>
+                            </select>
+                        </div>
+                    </div>
+
+                    <!-- Black Settings -->
+                    <div id="black-settings" class="space-y-2 pt-2 border-t border-white/5">
+                        <label id="comp-label" class="text-[8px] font-black text-red-400 uppercase">Computer (Black)</label>
+                        <div class="grid grid-cols-2 gap-2">
+                            <select id="comp-level" class="bg-white/5 border border-white/10 text-white text-[10px] rounded-lg p-1.5 outline-none"></select>
+                            <select id="comp-style" class="bg-white/5 border border-white/10 text-white text-[10px] rounded-lg p-1.5 outline-none">
+                                <option value="Solid">Solid</option>
+                                <option value="Aggressive">Aggressive</option>
+                                <option value="Positional">Positional</option>
+                                <option value="Gambiteer">Gambiteer</option>
+                            </select>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Appearance Controls -->
+                <div class="grid grid-cols-2 gap-3">
+                    <div class="flex flex-col">
+                        <label class="text-[8px] font-black opacity-40 uppercase mb-1">View</label>
+                        <select id="view-mode" class="bg-white/5 border border-white/10 text-white text-[11px] rounded-xl p-2 outline-none">
+                            <option value="3d">Real 3D</option>
+                            <option value="2d">Modern 2D</option>
+                        </select>
+                    </div>
+                    <div class="flex flex-col">
+                        <label class="text-[8px] font-black opacity-40 uppercase mb-1">Theme</label>
+                        <select id="board-select" class="bg-white/5 border border-white/10 text-white text-[11px] rounded-xl p-2 outline-none">
+                            <option value="midnight">Obsidian</option>
+                            <option value="wood">Walnut</option>
+                            <option value="marble">Emerald</option>
+                            <option value="cyber">Cyberpunk</option>
+                        </select>
+                    </div>
+                </div>
+
+                <!-- Enhanced Toggles -->
+                <div class="grid grid-cols-2 gap-3">
+                    <div class="flex flex-col">
+                        <label class="text-[8px] font-black opacity-40 uppercase mb-1">Animation</label>
+                        <select id="anim-toggle" class="bg-white/5 border border-white/10 text-white text-[11px] rounded-xl p-2 outline-none">
+                            <option value="true">Enabled</option>
+                            <option value="false">Off</option>
+                        </select>
+                    </div>
+                    <div class="flex flex-col">
+                        <label class="text-[8px] font-black opacity-40 uppercase mb-1">Material</label>
+                        <select id="mat-select" class="bg-white/5 border border-white/10 text-white text-[11px] rounded-xl p-2 outline-none">
+                            <option value="plastic">Matte</option>
+                            <option value="metallic">Metallic</option>
+                            <option value="glass">Glass</option>
+                            <option value="neon">Neon Glo</option>
+                            <option value="gold">Luxury Gold</option>
+                            <option value="carbon">Carbon Fiber</option>
+                        </select>
+                    </div>
+                </div>
+
+                <div class="grid grid-cols-2 gap-3">
+                    <div class="flex flex-col">
+                        <label class="text-[8px] font-black opacity-40 uppercase mb-1">BG Text</label>
+                        <select id="bg-text-toggle" class="bg-white/5 border border-white/10 text-white text-[11px] rounded-xl p-2 outline-none">
+                            <option value="false" selected>Hidden</option>
+                            <option value="true">Visible</option>
+                        </select>
+                    </div>
+                    <div class="flex flex-col">
+                        <label class="text-[8px] font-black opacity-40 uppercase mb-1">Glare Color</label>
+                        <select id="glare-toggle" class="bg-white/5 border border-white/10 text-white text-[11px] rounded-xl p-2 outline-none">
+                            <option value="blue">Electric Blue</option>
+                            <option value="red">Ruby Red</option>
+                            <option value="green">Acid Green</option>
+                            <option value="gold">Solar Gold</option>
+                            <option value="off">Disabled</option>
+                        </select>
+                    </div>
+                </div>
+
+                <div class="grid grid-cols-2 gap-3">
+                    <div class="flex flex-col">
+                        <label class="text-[8px] font-black opacity-40 uppercase mb-1">Sound</label>
+                        <select id="sound-select" class="bg-white/5 border border-white/10 text-white text-[11px] rounded-xl p-2 outline-none">
+                            <option value="true">On</option>
+                            <option value="false">Off</option>
+                        </select>
+                    </div>
+                    <div class="flex flex-col">
+                        <label class="text-[8px] font-black opacity-40 uppercase mb-1">User Side</label>
+                        <select id="side-select" class="bg-white/5 border border-white/10 text-white text-[11px] rounded-xl p-2 outline-none">
+                            <option value="w">White</option>
+                            <option value="b">Black</option>
+                        </select>
+                    </div>
+                </div>
+
+                <div class="pt-2 space-y-2">
+                    <button id="copy-pgn" class="w-full bg-blue-500 hover:bg-blue-600 text-white text-[10px] font-bold py-3 rounded-xl uppercase transition shadow-lg shadow-blue-500/20">Copy PGN</button>
+                    <div class="grid grid-cols-2 gap-2">
+                        <button id="flip-btn" class="bg-white/5 hover:bg-white/10 border border-white/10 text-[10px] font-bold py-3 rounded-xl uppercase transition">Rotate</button>
+                        <button id="reset-btn" class="bg-red-500/10 hover:bg-red-500/20 border border-red-500/20 text-red-500 text-[10px] font-bold py-3 rounded-xl uppercase transition">Reset</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Bottom Navigation / Links -->
+    <div class="mt-auto flex flex-col items-center w-full gap-4 pb-4 toggle-ui">
+        <div class="glass px-10 py-5 rounded-full flex gap-12 text-[10px] font-black uppercase tracking-widest pointer-events-auto">
+            <button id="undo-btn" class="hover:text-blue-500 transition">Undo</button>
+            <button id="cam-reset-btn" class="opacity-60">Recenter</button>
+        </div>
+        
+        <!-- Promo Link -->
+        <a href="https://pytheorem07.github.io/Chess64.app/" target="_blank" class="glass px-6 py-3 rounded-2xl text-[10px] font-medium text-white/70 hover:text-white pointer-events-auto transition-all border border-white/5 hover:border-white/20 group">
+            Check out our beutifull feature full Chess Website: <span class="text-blue-400 font-bold ml-1 group-hover:underline underline-offset-4">Chess64</span>
+        </a>
+    </div>
+</div>
+
+<script>
+// --- AUDIO SYSTEM ---
+const AudioSystem = {
+    ctx: null,
+    enabled: true,
+    init() { this.ctx = new (window.AudioContext || window.webkitAudioContext)(); },
+    playMove() {
+        if (!this.enabled || !this.ctx) return;
+        if (this.ctx.state === 'suspended') this.ctx.resume();
+        const osc = this.ctx.createOscillator();
+        const gain = this.ctx.createGain();
+        osc.type = 'triangle';
+        osc.frequency.setValueAtTime(160, this.ctx.currentTime);
+        osc.frequency.exponentialRampToValueAtTime(45, this.ctx.currentTime + 0.12);
+        gain.gain.setValueAtTime(0.2, this.ctx.currentTime);
+        gain.gain.exponentialRampToValueAtTime(0.001, this.ctx.currentTime + 0.15);
+        osc.connect(gain); gain.connect(this.ctx.destination);
+        osc.start(); osc.stop(this.ctx.currentTime + 0.15);
+    }
+};
+
+// --- CORE STATE ---
+const game = new Chess();
+let scene, camera, renderer, raycaster, mouse, rimLight;
+let pieces3D = {}; 
+let boardGroup = new THREE.Group();
+let stockfish;
+let isEngineLoaded = false;
+let currentMode = 'analyze'; 
+let userColor = 'w';
+let boardTheme = 'midnight';
+let selectedSquare = null;
+let currentMatType = 'plastic';
+let useAnimations = true;
+let bestMoveEnabled = true;
+
+// Interaction state
+let isDragging = false, dragThreshold = false;
+let lastSelectTime = 0; // Prevent rapid selection flicker
+let startMousePos = { x: 0, y: 0 };
+let prevMousePos = { x: 0, y: 0 };
+let theta = Math.PI/2, phi = Math.PI/3, radius = 14;
+let targetTheta = Math.PI/2, targetPhi = Math.PI/3;
+let prevPinchDist = 0;
+
+const THEMES = {
+    wood: { light: 0xeedcb3, dark: 0x7a503a, rim: 0x4a2e1f, b2d: ['#eedcb3', '#7a503a'] },
+    midnight: { light: 0x444444, dark: 0x111111, rim: 0x000000, b2d: ['#333', '#111'] },
+    marble: { light: 0xfafafa, dark: 0x22c55e, rim: 0x166534, b2d: ['#eee', '#166534'] },
+    cyber: { light: 0x00f3ff, dark: 0x001a1a, rim: 0x000000, b2d: ['#00f3ff', '#001a1a'] }
+};
+
+const PIECE_IMAGES = {
+    w: { p: 'https://upload.wikimedia.org/wikipedia/commons/4/45/Chess_plt45.svg', r: 'https://upload.wikimedia.org/wikipedia/commons/7/72/Chess_rlt45.svg', n: 'https://upload.wikimedia.org/wikipedia/commons/7/70/Chess_nlt45.svg', b: 'https://upload.wikimedia.org/wikipedia/commons/b/b1/Chess_blt45.svg', q: 'https://upload.wikimedia.org/wikipedia/commons/1/15/Chess_qlt45.svg', k: 'https://upload.wikimedia.org/wikipedia/commons/4/42/Chess_klt45.svg' },
+    b: { p: 'https://upload.wikimedia.org/wikipedia/commons/c/c7/Chess_pdt45.svg', r: 'https://upload.wikimedia.org/wikipedia/commons/f/ff/Chess_rdt45.svg', n: 'https://upload.wikimedia.org/wikipedia/commons/e/ef/Chess_ndt45.svg', b: 'https://upload.wikimedia.org/wikipedia/commons/9/98/Chess_bdt45.svg', q: 'https://upload.wikimedia.org/wikipedia/commons/4/47/Chess_qdt45.svg', k: 'https://upload.wikimedia.org/wikipedia/commons/f/f0/Chess_kdt45.svg' }
+};
+
+const GLARE_COLORS = {
+    blue: '#3b82f6',
+    red: '#ef4444',
+    green: '#22c55e',
+    gold: '#f59e0b',
+    off: 'transparent'
+};
+
+const ELO_MAP = {
+    1: 400, 2: 550, 3: 700, 4: 850, 5: 1000, 6: 1150, 7: 1300, 8: 1450, 9: 1600, 10: 1750,
+    11: 1900, 12: 2050, 13: 2200, 14: 2350, 15: 2500, 16: 2650, 17: 2800, 18: 2950, 19: 3100, 20: 3300
+};
+
+// --- ENGINE ---
+async function initEngine() {
+    try {
+        const res = await fetch("https://cdnjs.cloudflare.com/ajax/libs/stockfish.js/10.0.2/stockfish.js");
+        const blob = new Blob([await res.text()], { type: "application/javascript" });
+        stockfish = new Worker(URL.createObjectURL(blob));
+        stockfish.onmessage = (e) => {
+            const line = e.data;
+            if (line.startsWith('info depth')) {
+                const scoreMatch = line.match(/score cp (-?\d+)/);
+                const mateMatch = line.match(/score mate (-?\d+)/);
+                const pvMatch = line.match(/pv ([a-h][1-8][a-h][1-8][qrbn]?)/);
+                if (scoreMatch) {
+                    let val = parseInt(scoreMatch[1]) / 100;
+                    if (game.turn() === 'b') val = -val;
+                    updateEval(val);
+                } else if (mateMatch) {
+                    updateEval(parseInt(mateMatch[1]) > 0 ? 10 : -10);
+                }
+                
+                if (pvMatch && bestMoveEnabled) {
+                    const uci = pvMatch[1];
+                    const moveObj = game.move({ from: uci.slice(0, 2), to: uci.slice(2, 4), promotion: uci[4] || 'q' }, { dry_run: true });
+                    if (moveObj) {
+                        const san = moveObj.san;
+                        game.undo(); 
+                        document.getElementById('best-move-val-hud').innerText = san;
+                    } else {
+                        document.getElementById('best-move-val-hud').innerText = uci;
+                    }
+                }
+            }
+            if (line.startsWith('bestmove')) {
+                const moveStr = line.split(' ')[1];
+                if (moveStr && moveStr !== '(none)') {
+                    const shouldMove = (currentMode === 'play' && game.turn() !== userColor) || (currentMode === 'comp-vs-comp');
+                    if (shouldMove) setTimeout(() => makeMove(moveStr), 600);
+                }
+            }
+        };
+        stockfish.postMessage("uci");
+        stockfish.postMessage("isready");
+        isEngineLoaded = true;
+        populateLevels();
+        updateView();
+    } catch (err) { console.error("Engine failed"); }
+}
+
+function populateLevels() {
+    const wLevel = document.getElementById('w-comp-level');
+    const bLevel = document.getElementById('comp-level');
+    [wLevel, bLevel].forEach(select => {
+        select.innerHTML = '';
+        for(let i=1; i<=20; i++) {
+            const opt = document.createElement('option');
+            opt.value = i;
+            const elo = ELO_MAP[i];
+            opt.innerText = `Lvl ${i} (~${elo})`;
+            if(i === 5) opt.selected = true;
+            select.appendChild(opt);
+        }
+    });
+}
+
+function updateEval(val) {
+    const fill = document.getElementById('eval-fill');
+    const textTop = document.getElementById('eval-val-top');
+    let p = 50 + (val * 8); 
+    p = Math.max(2, Math.min(98, p));
+    fill.style.height = `${p}%`;
+    textTop.innerText = (val >= 0 ? '+' : '') + val.toFixed(1);
+}
+
+function updateMoveHistory() {
+    const history = game.history({ verbose: true });
+    const container = document.getElementById('move-history');
+    const moveCount = document.getElementById('move-count');
+    container.innerHTML = '';
+    moveCount.innerText = history.length;
+
+    for (let i = 0; i < history.length; i += 2) {
+        const moveIndex = Math.floor(i / 2) + 1;
+        const row = document.createElement('div');
+        row.className = 'grid grid-cols-7 py-1 px-2 border-b border-white/5 items-center hover:bg-white/5 rounded-lg';
+        
+        const idx = document.createElement('span');
+        idx.className = 'col-span-1 opacity-40 text-[9px]';
+        idx.innerText = moveIndex + '.';
+        
+        const white = document.createElement('span');
+        white.className = 'col-span-3 font-bold text-white';
+        white.innerText = history[i].san;
+        
+        row.appendChild(idx);
+        row.appendChild(white);
+
+        if (history[i+1]) {
+            const black = document.createElement('span');
+            black.className = 'col-span-3 font-bold text-blue-400 text-right';
+            black.innerText = history[i+1].san;
+            row.appendChild(black);
+        }
+
+        container.appendChild(row);
+    }
+    container.scrollTop = container.scrollHeight;
+}
+
+// --- 3D PIECES ---
+function createPieceMesh(type, color) {
+    const group = new THREE.Group();
+    const isWhite = color === 'w';
+    let baseColor = isWhite ? 0xffffff : 0x222222;
+    let mat;
+
+    if (currentMatType === 'metallic') {
+        mat = new THREE.MeshStandardMaterial({ color: baseColor, roughness: 0.2, metalness: 0.9 });
+    } else if (currentMatType === 'glass') {
+        mat = new THREE.MeshPhysicalMaterial({ color: baseColor, transmission: 0.95, opacity: 1, roughness: 0.05, thickness: 0.8, envMapIntensity: 1 });
+    } else if (currentMatType === 'neon') {
+        const neonCol = isWhite ? 0x00f3ff : 0xff00ff;
+        mat = new THREE.MeshStandardMaterial({ color: neonCol, emissive: neonCol, emissiveIntensity: 0.8 });
+    } else if (currentMatType === 'gold') {
+        mat = new THREE.MeshStandardMaterial({ color: 0xffd700, roughness: 0.1, metalness: 1 });
+    } else if (currentMatType === 'carbon') {
+        mat = new THREE.MeshStandardMaterial({ color: isWhite ? 0x444444 : 0x0a0a0a, roughness: 0.8, metalness: 0.2 });
+    } else {
+        mat = new THREE.MeshStandardMaterial({ color: baseColor, roughness: 0.6, metalness: 0 });
+    }
+
+    const add = (geo, y) => {
+        const m = new THREE.Mesh(geo, mat);
+        m.position.y = y;
+        m.castShadow = true; m.receiveShadow = true;
+        group.add(m);
+        return m;
+    };
+
+    add(new THREE.CylinderGeometry(0.38, 0.44, 0.15, 32), 0.075);
+    add(new THREE.CylinderGeometry(0.32, 0.38, 0.1, 32), 0.2);
+
+    switch(type) {
+        case 'p': add(new THREE.CylinderGeometry(0.12, 0.28, 0.6, 16), 0.4); add(new THREE.SphereGeometry(0.22, 16, 16), 0.8); break;
+        case 'r': add(new THREE.CylinderGeometry(0.25, 0.3, 0.8, 16), 0.45); add(new THREE.CylinderGeometry(0.32, 0.32, 0.25, 8), 0.95); break;
+        case 'n': add(new THREE.CylinderGeometry(0.2, 0.3, 0.4, 16), 0.3); const nH = add(new THREE.BoxGeometry(0.25, 0.6, 0.45), 0.7); nH.rotation.x = 0.4; break;
+        case 'b': add(new THREE.CylinderGeometry(0.12, 0.28, 0.9, 16), 0.5); const bH = add(new THREE.SphereGeometry(0.22, 16, 16), 1.05); bH.scale.y = 1.3; add(new THREE.SphereGeometry(0.06, 8, 8), 1.35); break;
+        case 'q': add(new THREE.CylinderGeometry(0.15, 0.3, 1.2, 16), 0.6); add(new THREE.SphereGeometry(0.28, 16, 16), 1.3); break;
+        case 'k': add(new THREE.CylinderGeometry(0.18, 0.32, 1.3, 16), 0.7); add(new THREE.BoxGeometry(0.1, 0.4, 0.1), 1.5); add(new THREE.BoxGeometry(0.3, 0.1, 0.1), 1.45); break;
+    }
+    return group;
+}
+
+function createBoard() {
+    boardGroup.clear();
+    const theme = THEMES[boardTheme];
+    const sqGeo = new THREE.BoxGeometry(1, 0.15, 1);
+    for (let r=0; r<8; r++) {
+        for (let c=0; c<8; c++) {
+            const sq = String.fromCharCode(97+c) + (8-r);
+            const mat = new THREE.MeshStandardMaterial({ color: (r+c)%2===0 ? theme.light : theme.dark, roughness: 0.4 });
+            const m = new THREE.Mesh(sqGeo, mat);
+            m.position.set(c-3.5, 0, r-3.5);
+            m.userData = { square: sq };
+            m.receiveShadow = true;
+            boardGroup.add(m);
+        }
+    }
+    scene.add(boardGroup);
+}
+
+function updateView() {
+    const board = game.board();
+    const active = {};
+    for (let r=0; r<8; r++) {
+        for (let c=0; c<8; c++) if (board[r][c]) active[String.fromCharCode(97+c)+(8-r)] = board[r][c];
+    }
+
+    for (let sq in pieces3D) {
+        if (!active[sq] || pieces3D[sq].type !== active[sq].type || pieces3D[sq].color !== active[sq].color) {
+            if (!pieces3D[sq].isAnimating) {
+                scene.remove(pieces3D[sq].mesh);
+                delete pieces3D[sq];
+            }
+        }
+    }
+
+    for (let sq in active) {
+        if (!pieces3D[sq]) {
+            const mesh = createPieceMesh(active[sq].type, active[sq].color);
+            const c = sq.charCodeAt(0)-97, r = 8-parseInt(sq[1]);
+            mesh.position.set(c-3.5, 0.08, r-3.5);
+            scene.add(mesh);
+            pieces3D[sq] = { ...active[sq], mesh, isAnimating: false };
+        }
+    }
+
+    boardGroup.children.forEach(m => {
+        if (!m.userData.square) return;
+        m.material.emissive.setHex(m.userData.square === selectedSquare ? 0x3b82f6 : 0x000000);
+        m.material.emissiveIntensity = 0.5;
+    });
+
+    update2D();
+    updateMoveHistory();
+
+    if (isEngineLoaded) { 
+        stockfish.postMessage(`position fen ${game.fen()}`);
+        const turn = game.turn();
+        const skill = turn === 'w' ? document.getElementById('w-comp-level').value : document.getElementById('comp-level').value;
+        const style = turn === 'w' ? document.getElementById('w-comp-style').value : document.getElementById('comp-style').value;
+        
+        if (style === 'Aggressive') stockfish.postMessage("setoption name Contempt value 100");
+        else if (style === 'Gambiteer') stockfish.postMessage("setoption name Contempt value 50");
+        else stockfish.postMessage("setoption name Contempt value 0");
+        
+        stockfish.postMessage(`setoption name Skill Level value ${skill}`);
+        stockfish.postMessage("go depth 12");
+    }
+}
+
+function update2D() {
+    const container = document.getElementById('board-2d');
+    if (!container) return;
+    container.innerHTML = '';
+    const theme = THEMES[boardTheme];
+    const isBlack = userColor === 'b';
+    for (let i=0; i<64; i++) {
+        const r = isBlack ? Math.floor(i/8) : 7 - Math.floor(i/8);
+        const c = isBlack ? 7 - (i%8) : i%8;
+        const sq = String.fromCharCode(97+c) + (r+1);
+        const piece = game.get(sq);
+        const div = document.createElement('div');
+        div.className = `sq-2d ${selectedSquare === sq ? 'highlight-2d' : ''}`;
+        div.style.background = (r+c)%2!==0 ? theme.b2d[0] : theme.b2d[1];
+        if (piece) {
+            const img = document.createElement('img');
+            img.src = PIECE_IMAGES[piece.color][piece.type];
+            div.appendChild(img);
+        }
+        div.onclick = (e) => {
+            e.preventDefault();
+            handleSquare(sq);
+        };
+        container.appendChild(div);
+    }
+}
+
+function animatePieceMove(from, to, pieceData, callback) {
+    const cFrom = from.charCodeAt(0)-97, rFrom = 8-parseInt(from[1]);
+    const cTo = to.charCodeAt(0)-97, rTo = 8-parseInt(to[1]);
+    const startPos = new THREE.Vector3(cFrom-3.5, 0.08, rFrom-3.5);
+    const endPos = new THREE.Vector3(cTo-3.5, 0.08, rTo-3.5);
+    const duration = 300, startTime = performance.now();
+    pieceData.isAnimating = true;
+
+    function step() {
+        const progress = Math.min((performance.now() - startTime) / duration, 1);
+        const ease = 1 - Math.pow(1 - progress, 3);
+        const currentPos = new THREE.Vector3().lerpVectors(startPos, endPos, ease);
+        currentPos.y = 0.08 + Math.sin(progress * Math.PI) * 0.4;
+        pieceData.mesh.position.copy(currentPos);
+        if (progress < 1) requestAnimationFrame(step);
+        else {
+            pieceData.isAnimating = false;
+            AudioSystem.playMove();
+            if (callback) callback();
+        }
+    }
+    requestAnimationFrame(step);
+}
+
+function makeMove(moveObj) {
+    const targetSquare = typeof moveObj === 'string' ? moveObj.slice(-2) : moveObj.to;
+    const fromSquare = typeof moveObj === 'string' ? moveObj.slice(0, 2) : moveObj.from;
+
+    const move = game.move(moveObj, { sloppy: true });
+    if (!move) return false;
+
+    const is2DActive = document.getElementById('board-2d-container').style.visibility === 'visible';
+    
+    if (pieces3D[targetSquare] && pieces3D[targetSquare].mesh) {
+        scene.remove(pieces3D[targetSquare].mesh);
+        delete pieces3D[targetSquare];
+    }
+
+    if (useAnimations && !is2DActive) {
+        const piece = pieces3D[fromSquare];
+        if (piece) {
+            pieces3D[move.to] = piece;
+            delete pieces3D[fromSquare];
+            animatePieceMove(move.from, move.to, piece, () => updateView());
+        } else { AudioSystem.playMove(); updateView(); }
+    } else { AudioSystem.playMove(); updateView(); }
+    return true;
+}
+
+function handleSquare(sq) {
+    // Basic debounce for touch/click events
+    const now = Date.now();
+    if (now - lastSelectTime < 50) return;
+    lastSelectTime = now;
+
+    if (currentMode === 'play' && game.turn() !== userColor) return;
+    if (currentMode === 'comp-vs-comp') return;
+
+    if (selectedSquare) {
+        if (selectedSquare === sq) { 
+            selectedSquare = null; 
+            updateView(); 
+            return; 
+        }
+        const success = makeMove({ from: selectedSquare, to: sq, promotion: 'q' });
+        if (success) {
+            selectedSquare = null;
+        } else {
+            // If failed, check if clicking another piece to select instead
+            const p = game.get(sq);
+            if (p && (currentMode === 'analyze' || p.color === game.turn())) {
+                selectedSquare = sq;
+            } else {
+                selectedSquare = null;
+            }
+        }
+    } else {
+        const p = game.get(sq);
+        if (p && (currentMode === 'analyze' || p.color === game.turn())) selectedSquare = sq;
+    }
+    updateView();
+}
+
+function init3D() {
+    scene = new THREE.Scene();
+    camera = new THREE.PerspectiveCamera(40, window.innerWidth/window.innerHeight, 0.1, 1000);
+    renderer = new THREE.WebGLRenderer({ antialias: true });
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    renderer.shadowMap.enabled = true;
+    document.body.appendChild(renderer.domElement);
+
+    scene.add(new THREE.AmbientLight(0xffffff, 0.4));
+    const spot = new THREE.SpotLight(0xffffff, 0.8);
+    spot.position.set(5, 15, 5);
+    spot.castShadow = true;
+    scene.add(spot);
+
+    rimLight = new THREE.PointLight(0x3b82f6, 1.2, 30);
+    rimLight.position.set(-10, 8, -10);
+    scene.add(rimLight);
+
+    raycaster = new THREE.Raycaster();
+    mouse = new THREE.Vector2();
+
+    createBoard();
+    setupInteraction();
+    animate();
+}
+
+function setupInteraction() {
+    const el = renderer.domElement;
+    
+    const onDown = (e) => { 
+        isDragging = true; 
+        dragThreshold = false; // Reset on down
+        if (e.touches && e.touches.length === 2) {
+            prevPinchDist = Math.hypot(
+                e.touches[0].clientX - e.touches[1].clientX,
+                e.touches[0].clientY - e.touches[1].clientY
+            );
+        } else {
+            const p = e.touches ? e.touches[0] : e; 
+            startMousePos = { x: p.clientX, y: p.clientY }; 
+            prevMousePos = { ...startMousePos }; 
+        }
+        if (AudioSystem.ctx === null) AudioSystem.init();
+    };
+
+    const onMove = (e) => {
+        if (!isDragging) return;
+        
+        if (e.touches && e.touches.length === 2) {
+            const currentDist = Math.hypot(
+                e.touches[0].clientX - e.touches[1].clientX,
+                e.touches[0].clientY - e.touches[1].clientY
+            );
+            const delta = currentDist - prevPinchDist;
+            radius = Math.max(5, Math.min(30, radius - delta * 0.05));
+            prevPinchDist = currentDist;
+            e.preventDefault();
+        } else if (e.touches ? e.touches.length === 1 : true) {
+            const p = e.touches ? e.touches[0] : e;
+            const dx = p.clientX - prevMousePos.x, dy = p.clientY - prevMousePos.y;
+            // Larger threshold for touch to distinguish tap from drag
+            const dist = Math.hypot(p.clientX - startMousePos.x, p.clientY - startMousePos.y);
+            if (dist > 10) dragThreshold = true;
+
+            if (dragThreshold) {
+                targetTheta -= dx * 0.007; targetPhi = Math.max(0.1, Math.min(Math.PI/2 - 0.1, targetPhi + dy * 0.007));
+            }
+            prevMousePos = { x: p.clientX, y: p.clientY };
+        }
+    };
+
+    const onUp = (e) => {
+        if (isDragging && !dragThreshold) {
+            // Only process as a tap if we didn't drag
+            const p = (e.changedTouches && e.changedTouches.length > 0) ? e.changedTouches[0] : (e.touches && e.touches.length > 0 ? e.touches[0] : e);
+            mouse.x = (p.clientX / window.innerWidth) * 2 - 1; 
+            mouse.y = -(p.clientY / window.innerHeight) * 2 + 1;
+            raycaster.setFromCamera(mouse, camera);
+            const hits = raycaster.intersectObjects(boardGroup.children);
+            if (hits.length > 0) handleSquare(hits[0].object.userData.square);
+        }
+        
+        if (e.touches && e.touches.length < 2) prevPinchDist = 0;
+        if (!e.touches || e.touches.length === 0) {
+            isDragging = false; 
+            dragThreshold = false;
+        }
+    };
+
+    const onWheel = (e) => {
+        radius = Math.max(5, Math.min(30, radius + e.deltaY * 0.01));
+        e.preventDefault();
+    };
+
+    el.addEventListener('mousedown', onDown); window.addEventListener('mousemove', onMove); window.addEventListener('mouseup', onUp);
+    el.addEventListener('touchstart', onDown, { passive: false }); window.addEventListener('touchmove', onMove, { passive: false }); window.addEventListener('touchend', onUp, { passive: false });
+    el.addEventListener('wheel', onWheel, { passive: false });
+}
+
+function animate() {
+    requestAnimationFrame(animate);
+    theta += (targetTheta - theta) * 0.1; phi += (targetPhi - phi) * 0.1;
+    camera.position.set(radius * Math.sin(phi) * Math.cos(theta), radius * Math.cos(phi), radius * Math.sin(phi) * Math.sin(theta));
+    camera.lookAt(0, 0, 0);
+    for (let sq in pieces3D) {
+        if (pieces3D[sq].isAnimating) continue;
+        const c = sq.charCodeAt(0)-97, r = 8-parseInt(sq[1]);
+        pieces3D[sq].mesh.position.x += (c - 3.5 - pieces3D[sq].mesh.position.x) * 0.2;
+        pieces3D[sq].mesh.position.z += (r - 3.5 - pieces3D[sq].mesh.position.z) * 0.2;
+    }
+    renderer.render(scene, camera);
+}
+
+// --- LISTENERS ---
+document.getElementById('view-mode').onchange = (e) => {
+    const is2d = e.target.value === '2d';
+    document.getElementById('board-2d-container').style.visibility = is2d ? 'visible' : 'hidden';
+    document.getElementById('board-2d-container').style.opacity = is2d ? '1' : '0';
+};
+document.getElementById('board-select').onchange = (e) => { boardTheme = e.target.value; createBoard(); updateView(); };
+document.getElementById('side-select').onchange = (e) => { userColor = e.target.value; targetTheta = userColor === 'w' ? Math.PI/2 : -Math.PI/2; updateView(); };
+document.getElementById('best-move-toggle').onclick = (e) => {
+    bestMoveEnabled = !bestMoveEnabled;
+    document.getElementById('best-move-hud').classList.toggle('ui-hidden', !bestMoveEnabled);
+    e.target.innerText = `Best Move: ${bestMoveEnabled ? 'On' : 'Off'}`;
+};
+document.getElementById('anim-toggle').onchange = (e) => { useAnimations = e.target.value === 'true'; };
+document.getElementById('mat-select').onchange = (e) => { currentMatType = e.target.value; pieces3D = {}; updateView(); };
+document.getElementById('bg-text-toggle').onchange = (e) => { document.getElementById('floating-title').style.opacity = e.target.value === 'true' ? '0.15' : '0'; };
+document.getElementById('glare-toggle').onchange = (e) => { 
+    const col = GLARE_COLORS[e.target.value];
+    const glareText = document.getElementById('glare-text');
+    glareText.style.color = col;
+    glareText.style.opacity = col === 'transparent' ? '0' : '1';
+    if(rimLight) rimLight.color.set(col === 'transparent' ? 0xffffff : col);
+};
+
+document.getElementById('game-mode').onchange = (e) => {
+    currentMode = e.target.value;
+    document.getElementById('white-settings').classList.toggle('hidden', currentMode !== 'comp-vs-comp');
+    document.getElementById('comp-label').innerText = currentMode === 'comp-vs-comp' ? 'Black Engine' : 'Computer';
+    document.getElementById('game-status').innerText = currentMode.toUpperCase().replace(/-/g, ' ');
+    updateView();
+};
+document.getElementById('copy-pgn').onclick = () => {
+    const pgn = game.pgn();
+    const el = document.createElement('textarea');
+    el.value = pgn || "No moves played."; document.body.appendChild(el); el.select(); document.execCommand('copy'); document.body.removeChild(el);
+    const btn = document.getElementById('copy-pgn'); const old = btn.innerText; btn.innerText = "COPIED!"; setTimeout(() => btn.innerText = old, 1000);
+};
+
+document.getElementById('undo-btn').onclick = () => { game.undo(); if(currentMode==='play') game.undo(); updateView(); };
+document.getElementById('reset-btn').onclick = () => { game.reset(); updateView(); };
+document.getElementById('cam-reset-btn').onclick = () => { targetTheta = userColor === 'w' ? Math.PI/2 : -Math.PI/2; targetPhi = Math.PI/3; radius = 14; };
+document.getElementById('flip-btn').onclick = () => { targetTheta += Math.PI; };
+document.getElementById('toggle-ui-btn').onclick = () => document.querySelectorAll('.toggle-ui').forEach(el => el.classList.toggle('ui-hidden'));
+document.getElementById('toggle-eval').onclick = (e) => {
+    const isHidden = document.getElementById('eval-wrapper').classList.toggle('ui-hidden');
+    e.target.innerText = isHidden ? "Show Eval" : "Hide Eval";
+};
+document.getElementById('toggle-moves').onclick = () => {
+    document.getElementById('move-list-container').classList.toggle('ui-hidden');
+};
+document.getElementById('sound-select').onchange = (e) => { AudioSystem.enabled = e.target.value === 'true'; };
+
+window.onload = () => { init3D(); initEngine(); };
+window.onresize = () => { camera.aspect = window.innerWidth / window.innerHeight; camera.updateProjectionMatrix(); renderer.setSize(window.innerWidth, window.innerHeight); };
+</script>
+</body>
+</html>
